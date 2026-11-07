@@ -12,8 +12,9 @@ from .config import Config
 # for each chunk of data, not the whole call.
 CONNECT_TIMEOUT = 10
 DEFAULT_TIMEOUT = (CONNECT_TIMEOUT, 60)
-# /sys.scripts.do sends nothing until the script ends, so reads must outlast it.
-SCRIPT_TIMEOUT = (CONNECT_TIMEOUT, 3600)
+# /sys.scripts.do sends nothing until the script ends and scripts legitimately
+# run for minutes, so only connecting is limited.
+SCRIPT_TIMEOUT = (CONNECT_TIMEOUT, None)
 
 
 class ScriptTokenError(ValueError):

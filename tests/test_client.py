@@ -121,8 +121,9 @@ class TimeoutTests(unittest.TestCase):
         client._scraping = Mock()
         return client
 
-    def test_script_timeout_is_much_longer_than_default(self):
-        self.assertGreaterEqual(SCRIPT_TIMEOUT[1], DEFAULT_TIMEOUT[1] * 10)
+    def test_script_timeout_limits_connect_but_not_read(self):
+        self.assertEqual(SCRIPT_TIMEOUT[0], DEFAULT_TIMEOUT[0])
+        self.assertIsNone(SCRIPT_TIMEOUT[1])
 
     def test_scraping_get_uses_default_timeout(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -171,22 +172,6 @@ class TimeoutTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(client._scraping.get.call_args.kwargs["timeout"], DEFAULT_TIMEOUT)
         self.assertEqual(client._scraping.post.call_args.kwargs["timeout"], SCRIPT_TIMEOUT)
-
-    def test_script_read_timeout_warns_script_may_still_run(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            client = self._client_with_mock_scraping(tmp)
-            client._scraping.get.return_value = Mock(
-                text='<input name="sysparm_ck" value="abc123">'
-            )
-            client._scraping.post.side_effect = requests.exceptions.ReadTimeout("timed out")
-            config = _make_config(tmp)
-            buf = io.StringIO()
-            with patch("snow_cli.commands.ServiceNowClient", return_value=client), \
-                 patch.object(client, "_save_cookies"), \
-                 redirect_stderr(buf):
-                exit_code = run_script(config, script_content="gs.print('hi');")
-        self.assertEqual(exit_code, 1)
-        self.assertIn("may still be running", buf.getvalue())
 
     def test_cli_reports_timeout_without_traceback(self):
         cases = [

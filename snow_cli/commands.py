@@ -13,8 +13,6 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
-import requests
-
 from .config import Config
 from .client import SCRIPT_TIMEOUT, ScriptTokenError, ServiceNowClient
 
@@ -170,33 +168,24 @@ def _run_script_once(client: ServiceNowClient, config: Config, script_content: s
     start_marker, end_marker = _generate_output_markers()
     wrapped_script = _wrap_script_with_output_markers(script_content, start_marker, end_marker)
 
-    try:
-        response = client.scraping_post(
-            "/sys.scripts.do",
-            headers={
-                "Connection": "keep-alive",
-                "Pragma": "no-cache",
-                "Cache-Control": "no-cache",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-            },
-            data={
-                "sysparm_ck": token,
-                "runscript": "Run script",
-                "record_for_rollback": "on",
-                "quota_managed_transaction": "on",
-                "script": wrapped_script,
-            },
-            timeout=SCRIPT_TIMEOUT,
-        )
-    except requests.exceptions.ReadTimeout:
-        print(
-            f"Script execution timed out waiting for {config.instance}. "
-            "The script may still be running on the instance; "
-            "check before running it again.",
-            file=sys.stderr,
-        )
-        return 1
+    response = client.scraping_post(
+        "/sys.scripts.do",
+        headers={
+            "Connection": "keep-alive",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+        },
+        data={
+            "sysparm_ck": token,
+            "runscript": "Run script",
+            "record_for_rollback": "on",
+            "quota_managed_transaction": "on",
+            "script": wrapped_script,
+        },
+        timeout=SCRIPT_TIMEOUT,
+    )
 
     if response.status_code != 200:
         print(f"Script execution failed with status: {response.status_code}", file=sys.stderr)
