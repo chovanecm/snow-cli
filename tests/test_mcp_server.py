@@ -1,7 +1,10 @@
 import json
+import os
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.modules.setdefault(
@@ -45,6 +48,7 @@ class McpToolTestCase(unittest.TestCase):
         self.config = Config(instance=INSTANCE, user="admin", password="pass")
         self.repository = Mock()
         self.repository.load_config.return_value = self.config
+        self.repository.list_all.return_value = {INSTANCE: {"user": "admin"}}
         for name, replacement in (
             ("InstanceRepository", Mock(return_value=self.repository)),
             ("log_tool_call", Mock()),
@@ -83,6 +87,47 @@ class CredentialLoadingTests(McpToolTestCase):
         with patch.object(mcp_server, "count_records_value", Mock(return_value=1)):
             mcp_server.snow_record_count("incident")
         self.repository.load_config.assert_called_once_with(instance=None)
+
+
+class InstanceAllowlistTests(McpToolTestCase):
+    def setUp(self):
+        super().setUp()
+        env = {k: v for k, v in os.environ.items() if k != "snow_instance"}
+        patcher = patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_unconfigured_instance_is_refused_before_loading_credentials(self):
+        command = Mock(return_value=1)
+        with patch.object(mcp_server, "count_records_value", command):
+            result = json.loads(mcp_server.snow_record_count("incident", instance="evil.example.com"))
+        self.assertIn("not configured", result["error"])
+        self.repository.load_config.assert_not_called()
+        command.assert_not_called()
+        self.assertEqual(self.log_tool_call.call_args[0][2], "error")
+
+    def test_every_tool_refuses_unconfigured_instance(self):
+        host = "evil.example.com"
+        for call_tool in (
+            lambda: mcp_server.snow_run_script("gs.print(1);", instance=host),
+            lambda: mcp_server.snow_login(instance=host),
+            lambda: mcp_server.snow_elevate(instance=host),
+        ):
+            with self.assertRaisesRegex(ValueError, "not configured"):
+                call_tool()
+        for call_tool in (
+            lambda: mcp_server.snow_record_search("incident", instance=host),
+            lambda: mcp_server.snow_table_fields("incident", instance=host),
+            lambda: mcp_server.snow_record_aggregate("incident", count=True, instance=host),
+        ):
+            self.assertIn("not configured", json.loads(call_tool())["error"])
+        self.repository.load_config.assert_not_called()
+
+    def test_instance_from_snow_instance_env_is_allowed(self):
+        with patch.dict(os.environ, {"snow_instance": "env.example.com"}), \
+             patch.object(mcp_server, "count_records_value", Mock(return_value=1)):
+            mcp_server.snow_record_count("incident", instance="env.example.com")
+        self.repository.load_config.assert_called_once_with(instance="env.example.com")
 
 
 class ConfigFailureAuditTests(McpToolTestCase):
@@ -130,3 +175,51 @@ class AuditRedactionTests(unittest.TestCase):
         self.assertNotIn("s3cret", redacted.values())
         self.assertNotIn("t0ken", redacted.values())
         self.assertEqual(redacted["client_id"], "abc")
+
+
+class OutputFileSandboxTests(McpToolTestCase):
+    def setUp(self):
+        super().setUp()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        self.cwd = self.root / "work"
+        self.cwd.mkdir()
+        previous = os.getcwd()
+        os.chdir(self.cwd)
+        self.addCleanup(os.chdir, previous)
+        self.commands = {}
+        for name, value in (
+            ("search_records_json", [{"sys_id": "1"}]),
+            ("table_fields_json", [{"field": "a"}]),
+            ("aggregate_records_json", [{"count": 1}]),
+        ):
+            command = Mock(return_value=value)
+            self.commands[name] = command
+            patcher = patch.object(mcp_server, name, command)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.tools = [
+            ("search_records_json", lambda f: mcp_server.snow_record_search("incident", output_file=f)),
+            ("table_fields_json", lambda f: mcp_server.snow_table_fields("incident", output_file=f)),
+            ("aggregate_records_json", lambda f: mcp_server.snow_record_aggregate("incident", count=True, output_file=f)),
+        ]
+
+    def test_relative_path_is_written_and_absolute_location_returned(self):
+        for command_name, call_tool in self.tools:
+            with self.subTest(command=command_name):
+                filename = f"{command_name}.json"
+                result = json.loads(call_tool(filename))
+                self.assertEqual(result["saved_to"], str(self.cwd / filename))
+                self.assertTrue((self.cwd / filename).exists())
+
+    def test_paths_outside_working_directory_are_rejected_before_querying(self):
+        outside = self.root / "outside.json"
+        (self.cwd / "link").symlink_to(self.root)
+        for path in (str(outside), "../outside.json", "sub/../../outside.json", "link/outside.json"):
+            for command_name, call_tool in self.tools:
+                with self.subTest(command=command_name, path=path):
+                    self.commands[command_name].reset_mock()
+                    self.assertIn("error", json.loads(call_tool(path)))
+                    self.commands[command_name].assert_not_called()
+        self.assertFalse(outside.exists())
