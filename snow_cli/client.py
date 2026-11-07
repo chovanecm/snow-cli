@@ -7,14 +7,9 @@ from typing import Optional
 import requests
 
 from .config import Config
-
-# requests timeouts as (connect, read) seconds. The read timeout limits the wait
-# for each chunk of data, not the whole call.
-CONNECT_TIMEOUT = 10
-DEFAULT_TIMEOUT = (CONNECT_TIMEOUT, 60)
-# /sys.scripts.do sends nothing until the script ends and scripts legitimately
-# run for minutes, so only connecting is limited.
-SCRIPT_TIMEOUT = (CONNECT_TIMEOUT, None)
+from .oauth import BearerAuth, OAuthTokenProvider
+from .timeouts import DEFAULT_TIMEOUT
+from .token_store import TokenStore
 
 
 class ScriptTokenError(ValueError):
@@ -22,17 +17,26 @@ class ScriptTokenError(ValueError):
 
 
 class ServiceNowClient:
-    """Facade owning both HTTP transports (cookie-auth scraping + basic-auth REST)."""
+    """Facade owning both HTTP transports (cookie-auth scraping + basic or bearer REST)."""
 
     def __init__(self, config: Config):
         self._base_url = f"https://{config.instance}"
         self._cookie_file = config.cookie_file
 
         self._rest = requests.Session()
-        self._rest.auth = (config.user, config.password)
+        if config.is_oauth:
+            store = TokenStore(config.instance, config.client_id, config.token_cache_file)
+            self._rest.auth = BearerAuth(OAuthTokenProvider(config, store))
+        else:
+            self._rest.auth = (config.user, config.password)
         self._rest.headers.update({"Accept": "application/json"})
 
         self._scraping: Optional[requests.Session] = None
+        self._supports_ui_session = not config.is_oauth
+
+    @property
+    def supports_ui_session(self) -> bool:
+        return self._supports_ui_session
 
     # ── REST transport ─────────────────────────────────────────────────────
 

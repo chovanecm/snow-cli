@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from .config import Config
-from .client import SCRIPT_TIMEOUT, ScriptTokenError, ServiceNowClient
+from .client import ScriptTokenError, ServiceNowClient
+from .timeouts import SCRIPT_TIMEOUT
 
 
 DISPLAY_VALUE_MAP = {

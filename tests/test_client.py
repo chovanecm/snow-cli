@@ -21,12 +21,13 @@ sys.modules.setdefault("keyring", keyring_stub)
 from snow_cli.cli import main
 from snow_cli.client import (
     DEFAULT_TIMEOUT,
-    SCRIPT_TIMEOUT,
     ScriptTokenError,
     ServiceNowClient,
 )
 from snow_cli.commands import run_script
-from snow_cli.config import Config
+from snow_cli.config import AuthType, Config
+from snow_cli.oauth import BearerAuth
+from snow_cli.timeouts import SCRIPT_TIMEOUT
 
 
 def _make_config(tmp_dir, instance="dev.example.com", user="admin", password="pass"):
@@ -68,6 +69,27 @@ class RestSessionTests(unittest.TestCase):
             timeout=DEFAULT_TIMEOUT,
         )
         self.assertIs(result, mock_resp)
+
+
+class OAuthClientTests(unittest.TestCase):
+    def _oauth_config(self, tmp):
+        return Config(
+            instance="dev.example.com",
+            auth_type=AuthType.OAUTH,
+            client_id="abc",
+            client_secret="s3cret",
+            token_cache_file=Path(tmp) / "oauth_token.json",
+        )
+
+    def test_oauth_config_uses_bearer_auth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = ServiceNowClient(self._oauth_config(tmp))
+        self.assertIsInstance(client._rest.auth, BearerAuth)
+
+    def test_ui_session_support_follows_auth_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(ServiceNowClient(self._oauth_config(tmp)).supports_ui_session)
+            self.assertTrue(ServiceNowClient(_make_config(tmp)).supports_ui_session)
 
 
 class ScrapingSessionTests(unittest.TestCase):
