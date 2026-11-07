@@ -402,6 +402,29 @@ snow remove dev1234.service-now.com
 snow info
 ```
 
+### OAuth sign-in
+
+An instance can use OAuth instead of a stored username and password. You sign in through the browser, and calls run as you, with your roles. Single sign-on works if the instance uses it.
+
+```bash
+snow add --oauth dev1234.service-now.com   # prompts for client ID and secret
+snow -i dev1234.service-now.com login      # opens the browser
+snow -i dev1234.service-now.com r search sys_db_object -l 1
+```
+
+**Instance setup:** Create an OAuth client for external clients, under System OAuth > Application Registry, or All > Machine Identity Console on newer releases. Add `http://localhost:8765/callback` as its Redirect URL. No system property is needed. The scope granted to the token comes from the client.
+
+| Feature | Under OAuth |
+|---|---|
+| `snow record`, `snow r`, `snow table` | Works |
+| MCP search, count, aggregate and fields tools | Works after `snow login` |
+| `snow_login` MCP tool | Not available: run `snow login` in a terminal |
+| `snow run`, `snow elevate`, `snow_run_script`, `snow_elevate` | Not available: these need a UI session, which OAuth sign-in does not create |
+
+Access tokens renew on their own. When renewal is no longer possible, commands tell you to run `snow login` again. A person must sign in at least once, so OAuth cannot bootstrap unattended runs.
+
+`snow_client_id` and `snow_client_secret` supply the client from the environment. They must be set together. Credentials resolve in this order: those two variables, then `snow_user` with `snow_pwd`, then the stored instance.
+
 ---
 
 ## Working with Instances

@@ -286,7 +286,7 @@ Tasks 3 and 6-8 do not depend on the result. Tasks 4 and 5 use the fixtures.
   * `snow list` prints `Auth: OAuth authorization code`, the client ID, and the secret's storage location.
 - [ ] **Step 3: Run tests, commit** `feat: add --oauth option to snow add`
 
-### Task 8: Documentation
+### Task 8: Documentation (done)
 
 **Files:**
 * Modify: `README.md`, `SECURITY.md`, `copilot-skills/servicenow-mcp/SKILL.md`
