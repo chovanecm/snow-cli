@@ -8,6 +8,13 @@ import requests
 
 from .config import Config
 
+# requests timeouts as (connect, read) seconds. The read timeout limits the wait
+# for each chunk of data, not the whole call.
+CONNECT_TIMEOUT = 10
+DEFAULT_TIMEOUT = (CONNECT_TIMEOUT, 60)
+# /sys.scripts.do sends nothing until the script ends, so reads must outlast it.
+SCRIPT_TIMEOUT = (CONNECT_TIMEOUT, 3600)
+
 
 class ScriptTokenError(ValueError):
     """Raised when the background-script execution token cannot be obtained."""
@@ -30,17 +37,24 @@ class ServiceNowClient:
 
     def rest_get(self, path: str, params=None, extra_headers=None) -> requests.Response:
         headers = dict(extra_headers) if extra_headers else {}
-        return self._rest.get(f"{self._base_url}{path}", params=params, headers=headers)
+        return self._rest.get(
+            f"{self._base_url}{path}",
+            params=params,
+            headers=headers,
+            timeout=DEFAULT_TIMEOUT,
+        )
 
     # ── Scraping transport ─────────────────────────────────────────────────
 
     def scraping_get(self, path: str, **kwargs) -> requests.Response:
+        kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
         session = self._get_scraping_session()
         response = session.get(f"{self._base_url}{path}", **kwargs)
         self._save_cookies()
         return response
 
     def scraping_post(self, path: str, **kwargs) -> requests.Response:
+        kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
         session = self._get_scraping_session()
         response = session.post(f"{self._base_url}{path}", **kwargs)
         self._save_cookies()
