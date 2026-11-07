@@ -1,6 +1,7 @@
 """Instance management commands"""
 import sys
 import getpass
+from .config import Config
 from .instance_repository import InstanceRepository
 
 
@@ -52,6 +53,46 @@ def add_instance(instance: str = None, set_default: bool = False):
         return 1
 
 
+def add_oauth_instance(instance: str = None, client_id: str = None, set_default: bool = False):
+    """Add a ServiceNow instance that signs in through OAuth"""
+    try:
+        if not instance:
+            instance = input("ServiceNow instance (e.g. dev1234.service-now.com): ").strip()
+        Config(instance=instance).ensure_instance_set()
+
+        client_id = client_id or input(f"OAuth client ID for {instance}: ").strip()
+        if not client_id:
+            print("Error: Client ID is required", file=sys.stderr)
+            return 1
+
+        client_secret = getpass.getpass(f"OAuth client secret for {instance}: ")
+        if not client_secret:
+            print("Error: Client secret is required", file=sys.stderr)
+            return 1
+
+        repo = InstanceRepository()
+        keyring_success = repo.save_oauth(instance, client_id, client_secret, set_default)
+
+        print(f"\n✓ Added instance: {instance}")
+        print(f"  Client ID: {client_id}")
+        if keyring_success:
+            print("  Client secret: Stored in system keyring (secure)")
+        else:
+            print("  Client secret: Stored in config file (fallback)")
+            print("  Warning: System keyring not available, using less secure storage")
+        if set_default or repo.get_default() == instance:
+            print("  Set as default instance")
+        print(f"\nNext: run 'snow -i {instance} login' to sign in through the browser.")
+        return 0
+
+    except KeyboardInterrupt:
+        print("\n\nCancelled.", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Error adding instance: {e}", file=sys.stderr)
+        return 1
+
+
 def list_instances():
     """List all configured instances"""
     repo = InstanceRepository()
@@ -69,8 +110,13 @@ def list_instances():
         marker = " (default)" if instance == default else ""
         keyring_marker = " [keyring]" if creds.get("keyring") else " [config file]"
         print(f"  {instance}{marker}")
-        print(f"    User: {creds['user']}")
-        print(f"    Password: Stored in{keyring_marker}")
+        if creds.get("auth") == "oauth":
+            print("    Auth: OAuth authorization code")
+            print(f"    Client ID: {creds.get('client_id')}")
+            print(f"    Client secret: Stored in{keyring_marker}")
+        else:
+            print(f"    User: {creds['user']}")
+            print(f"    Password: Stored in{keyring_marker}")
         print()
 
     return 0
@@ -124,8 +170,13 @@ def show_info():
 
     if config.instance:
         print(f"Current instance: {config.instance}")
-        print(f"  User: {config.user or '(not set)'}")
-        print(f"  Password: {'(set)' if config.password else '(not set)'}")
+        if config.is_oauth:
+            print("  Auth: OAuth authorization code")
+            print(f"  Client ID: {config.client_id or '(not set)'}")
+            print(f"  Client secret: {'(set)' if config.client_secret else '(not set)'}")
+        else:
+            print(f"  User: {config.user or '(not set)'}")
+            print(f"  Password: {'(set)' if config.password else '(not set)'}")
         print(f"  Cookie file: {config.cookie_file}")
     else:
         default = repo.get_default()

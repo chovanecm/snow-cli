@@ -94,13 +94,14 @@ Env vars supply the client, not a session. A prior `snow login` is still needed.
 
 ### Task 1: Fix MCP credential loading (done)
 
-Committed on `fix/mcp-credential-loading` for its own PR, in `4618f82` and `b91934a`.
+Handled in its own PR, on `fix/mcp-credential-loading`.
 
 * All MCP tools load config through `_load_config(instance)` in `snow_cli/mcp_server.py`, inside their `try`.
 * `_load_config` refuses instances that are not configured and are not `snow_instance`.
 * `Config.ensure_instance_set()` requires a bare hostname with an optional port.
 * MCP `output_file` is confined to the server's working directory, and `saved_to` is the absolute path.
 * `client_secret` and `access_token` are in `_REDACTED_PARAMS`. Task 5 adds `refresh_token`.
+* The audit log records real command outcomes and the resolved host.
 
 ### Task 2: Spike against a real instance (done)
 
@@ -123,7 +124,7 @@ Tasks 3 and 6-8 do not depend on the result. Tasks 4 and 5 use the fixtures.
 
 ### Task 3: Config model and env resolution (done)
 
-Committed as `ccc354c`. `AuthType`, `client_id`, `client_secret`, `token_cache_file` and `Config.is_oauth` exist, secrets are out of `repr`, env resolution follows the rules above, and the CLI reports a half-set env without a traceback.
+`AuthType`, `client_id`, `client_secret`, `token_cache_file` and `Config.is_oauth` exist, secrets are out of `repr`, env resolution follows the rules above, and the CLI reports a half-set env without a traceback.
 
 ### Task 4: Token store, token requests and client wiring (done)
 
@@ -204,7 +205,7 @@ Committed as `ccc354c`. `AuthType`, `client_id`, `client_secret`, `token_cache_f
 - [ ] **Step 3: Wire into the client.** Choose the auth in one place, in `ServiceNowClient.__init__`. Update the class docstring.
 - [ ] **Step 4: Run tests, commit** `feat: authenticate REST calls with OAuth bearer tokens`
 
-### Task 5: Browser login and command behaviour (code done, tracer check pending)
+### Task 5: Browser login and command behaviour (done)
 
 **Files:**
 * Modify: `snow_cli/oauth.py`, `snow_cli/client.py`, `snow_cli/commands.py`, `snow_cli/mcp_server.py`, `snow_cli/audit.py`
@@ -244,7 +245,7 @@ Committed as `ccc354c`. `AuthType`, `client_id`, `client_secret`, `token_cache_f
 - [ ] **Step 3: Run tests, commit** `feat: add browser login and guard session commands`
 - [ ] **Step 4: Tracer check.** With `snow_instance`, `snow_client_id` and `snow_client_secret` set, run `snow login`, then `snow r search sys_db_object -l 1`. Stop and fix anything found before continuing.
 
-### Task 6: Stored OAuth credentials
+### Task 6: Stored OAuth credentials (done)
 
 **Files:**
 * Modify: `snow_cli/instance_repository.py`
@@ -265,7 +266,7 @@ Committed as `ccc354c`. `AuthType`, `client_id`, `client_secret`, `token_cache_f
   * Add a private `_delete_stored_secret(instance, entry)` that handles both entry types, and use it from `save`, `save_oauth` and `remove`.
 - [ ] **Step 3: Run tests, commit** `feat: store OAuth client credentials per instance`
 
-### Task 7: `snow add --oauth` and instance display
+### Task 7: `snow add --oauth` and instance display (done)
 
 **Files:**
 * Modify: `snow_cli/instance_manager.py`, `snow_cli/cli.py`

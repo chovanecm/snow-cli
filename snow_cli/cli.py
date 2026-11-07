@@ -3,7 +3,7 @@ import sys
 import click
 from .instance_repository import InstanceRepository
 from .commands import login, elevate, run_script, search_records, table_fields, count_records, aggregate_records, OutputFormat
-from .instance_manager import add_instance, list_instances, use_instance, remove_instance, show_info
+from .instance_manager import add_instance, add_oauth_instance, list_instances, use_instance, remove_instance, show_info
 
 @click.group()
 @click.option(
@@ -65,7 +65,9 @@ def run(config, script_file, auto_login):
 @main.command()
 @click.argument("instance", required=False)
 @click.option("--default", is_flag=True, help="Set as default instance")
-def add(instance, default):
+@click.option("--oauth", is_flag=True, help="Sign in through OAuth instead of a username and password")
+@click.option("--client-id", help="OAuth client ID (prompted for if omitted). The secret is always prompted for.")
+def add(instance, default, oauth, client_id):
     """Add a new ServiceNow instance
 
     INSTANCE: ServiceNow instance (e.g. dev1234.service-now.com)
@@ -74,7 +76,12 @@ def add(instance, default):
       snow add dev1234.service-now.com
       snow add --default dev1234.service-now.com
       snow add  # Interactive prompt
+      snow add --oauth dev1234.service-now.com
     """
+    if client_id and not oauth:
+        raise click.UsageError("--client-id requires --oauth")
+    if oauth:
+        sys.exit(add_oauth_instance(instance, client_id, default))
     sys.exit(add_instance(instance, default))
 
 
