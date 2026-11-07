@@ -49,6 +49,15 @@ from snow_cli.config import Config
 from snow_cli.client import ScriptTokenError
 
 
+class CliConfigResolutionTests(unittest.TestCase):
+    def test_partial_oauth_env_is_a_clean_error(self):
+        with patch.dict("os.environ", {"snow_client_id": "abc"}, clear=True):
+            result = CliRunner().invoke(cli_module.main, ["info"])
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("snow_client_id and snow_client_secret", result.output)
+        self.assertNotIsInstance(result.exception, ValueError)
+
+
 class CliAliasParity(unittest.TestCase):
     """Verify that record/r aliases are functionally identical."""
 

@@ -17,6 +17,7 @@ keyring_stub = types.SimpleNamespace(
 )
 sys.modules.setdefault("keyring", keyring_stub)
 
+from snow_cli.config import AuthType
 from snow_cli.instance_repository import InstanceRepository
 
 
@@ -234,3 +235,69 @@ class LoadConfigTests(unittest.TestCase):
         config = self.repo.load_config()
         self.assertEqual(config.user, "admin")
         self.assertEqual(config.password, "s3cr3t")
+
+
+class OAuthEnvResolutionTests(unittest.TestCase):
+    INSTANCE = "dev.service-now.com"
+    OAUTH_ENV = {"snow_client_id": "abc", "snow_client_secret": "s3cret"}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = InstanceRepository(snow_dir=Path(tmp.name) / ".snow-run")
+        self.repo.snow_dir.mkdir()
+        self.repo.config_file.write_text(json.dumps({
+            "default_instance": self.INSTANCE,
+            "instances": {self.INSTANCE: {"user": "stored", "keyring": False, "password": "stored_pass"}},
+        }))
+
+    def _load(self, env, instance=None):
+        with patch.dict(os.environ, env, clear=True):
+            return self.repo.load_config(instance=instance)
+
+    def test_env_client_credentials_select_oauth_over_stored_basic(self):
+        config = self._load(self.OAUTH_ENV)
+        self.assertIs(config.auth_type, AuthType.OAUTH)
+        self.assertEqual(config.client_id, "abc")
+        self.assertEqual(config.client_secret, "s3cret")
+        self.assertEqual(config.instance, self.INSTANCE)
+        self.assertIsNone(config.user)
+        self.assertIsNone(config.password)
+
+    def test_env_client_credentials_win_over_env_user_and_password(self):
+        config = self._load({**self.OAUTH_ENV, "snow_user": "env_user", "snow_pwd": "env_pass"})
+        self.assertTrue(config.is_oauth)
+        self.assertIsNone(config.password)
+
+    def test_env_client_credentials_work_with_no_stored_instance(self):
+        repo = InstanceRepository(snow_dir=self.repo.snow_dir / "empty")
+        with patch.dict(os.environ, {**self.OAUTH_ENV, "snow_instance": "env.service-now.com"}, clear=True):
+            config = repo.load_config()
+        self.assertTrue(config.is_oauth)
+        self.assertEqual(config.instance, "env.service-now.com")
+
+    def test_only_one_client_variable_is_an_error(self):
+        for name, value in self.OAUTH_ENV.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "snow_client_id and snow_client_secret"):
+                    self._load({name: value})
+
+    def test_error_for_partial_env_does_not_contain_the_secret(self):
+        with self.assertRaises(ValueError) as caught:
+            self._load({"snow_client_secret": "s3cret"})
+        self.assertNotIn("s3cret", str(caught.exception))
+
+    def test_stored_basic_is_unchanged_without_client_variables(self):
+        config = self._load({})
+        self.assertIs(config.auth_type, AuthType.BASIC)
+        self.assertEqual(config.user, "stored")
+        self.assertEqual(config.password, "stored_pass")
+
+    def test_paths_are_set_for_both_auth_types(self):
+        for env in ({}, self.OAUTH_ENV):
+            with self.subTest(oauth=bool(env)):
+                config = self._load(env)
+                tmp_dir = self.repo.tmp_dir_for(self.INSTANCE)
+                self.assertEqual(config.token_cache_file, tmp_dir / "oauth_token.json")
+                self.assertEqual(config.cookie_file, self.repo.cookie_file_for(self.INSTANCE))
+                self.assertEqual(config.tmp_dir, tmp_dir)

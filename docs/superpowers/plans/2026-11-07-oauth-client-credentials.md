@@ -83,7 +83,7 @@ No refresh token handling: the client can always request a new token with its cr
 
 ### Task 1: Fix MCP credential loading (done)
 
-Landed on `fix/mcp-credential-loading` as its own PR, in `4618f82` and `b91934a`. It is an existing bug, and OAuth cannot reach MCP without it.
+Committed on `fix/mcp-credential-loading` for its own PR, in `4618f82` and `b91934a`. It is an existing bug, and OAuth cannot reach MCP without it.
 
 * All MCP tools load config through `_load_config(instance)` in `snow_cli/mcp_server.py`, inside their `try`, so failures reach the audit log.
 * `_load_config` refuses instances that are not configured and are not `snow_instance`, because `load_config` applies env credentials to any host. `snow_client_id` and `snow_client_secret` get the same protection.
@@ -118,7 +118,7 @@ Landed on `fix/mcp-credential-loading` as its own PR, in `4618f82` and `b91934a`
 
 Tasks 3-8 do not depend on the script page result.
 
-### Task 3: Config model and env resolution
+### Task 3: Config model and env resolution (done)
 
 **Files:**
 * Modify: `snow_cli/config.py`, `snow_cli/instance_repository.py`, `snow_cli/cli.py`

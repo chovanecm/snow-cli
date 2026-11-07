@@ -23,7 +23,10 @@ def main(ctx, instance):
       snow --instance dev2 login  # Login to specific instance
     """
     # Initialize config with specified instance
-    config = InstanceRepository().load_config(instance=instance)
+    try:
+        config = InstanceRepository().load_config(instance=instance)
+    except ValueError as e:
+        raise click.ClickException(str(e))
     ctx.obj = config
 
 

@@ -23,6 +23,9 @@ class InstanceRepository:
     def tmp_dir_for(self, instance: str) -> Path:
         return self.snow_dir / "tmp" / instance
 
+    def token_cache_file_for(self, instance: str) -> Path:
+        return self.tmp_dir_for(instance) / "oauth_token.json"
+
     # ---------- CRUD ----------
 
     def save(self, instance: str, user: str, password: str, set_default: bool = False) -> bool:
@@ -67,9 +70,22 @@ class InstanceRepository:
 
     def load_config(self, instance: Optional[str] = None) -> "Config":
         """Resolve credentials from env vars and config file; return a populated Config."""
-        from .config import Config
+        from .config import AuthType, Config
 
         instance = instance or os.environ.get("snow_instance")
+        client_id = os.environ.get("snow_client_id")
+        client_secret = os.environ.get("snow_client_secret")
+        if bool(client_id) != bool(client_secret):
+            raise ValueError("Set both snow_client_id and snow_client_secret, or neither.")
+        if client_id:
+            instance = instance or self.get_default()
+            return Config(
+                auth_type=AuthType.OAUTH,
+                client_id=client_id,
+                client_secret=client_secret,
+                **self._paths_for(instance),
+            )
+
         user = os.environ.get("snow_user")
         password = os.environ.get("snow_pwd")
 
@@ -86,15 +102,18 @@ class InstanceRepository:
                     if not password:
                         password = inst_cfg.get("password")
 
-        cookie_file = self.cookie_file_for(instance) if instance else None
-        tmp_dir = self.tmp_dir_for(instance) if instance else None
-        return Config(
-            instance=instance,
-            user=user,
-            password=password,
-            cookie_file=cookie_file,
-            tmp_dir=tmp_dir,
-        )
+        return Config(user=user, password=password, **self._paths_for(instance))
+
+    def _paths_for(self, instance: Optional[str]) -> dict:
+        """Return the instance and its derived paths as Config keyword arguments."""
+        if not instance:
+            return {"instance": None}
+        return {
+            "instance": instance,
+            "cookie_file": self.cookie_file_for(instance),
+            "tmp_dir": self.tmp_dir_for(instance),
+            "token_cache_file": self.token_cache_file_for(instance),
+        }
 
     # ---------- private I/O ----------
 
