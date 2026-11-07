@@ -42,7 +42,7 @@ Use a private client with its existing secret, plus the `state` parameter. Servi
 1. Generate `state` with `secrets.token_urlsafe(32)`.
 2. Bind `127.0.0.1` on the redirect port before opening the browser, so a busy port fails early with a clear message.
 3. Print the URL `https://<instance>/oauth_auth.do?response_type=code&client_id=...&redirect_uri=...&state=...` and open it with `webbrowser.open`. Printing it covers SSH sessions with a forwarded port.
-4. Accept `GET /callback`. Compare `state` with `hmac.compare_digest`. Requests with a wrong `state` get a 400 and do not end the wait. An `error` parameter raises `OAuthError`. Give up after 120 seconds.
+4. Accept `GET /callback`. Compare `state` with `hmac.compare_digest`. Requests with a wrong `state` get a 400 and do not end the wait. An `error` parameter raises `OAuthError`. Give up after 180 seconds, which leaves time for SSO and MFA.
 5. Answer with a fixed plain-text page. Never echo query values into the response.
 6. POST `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `client_secret` to `/oauth_token.do`, then store the tokens.
 
@@ -204,7 +204,7 @@ Committed as `ccc354c`. `AuthType`, `client_id`, `client_secret`, `token_cache_f
 - [ ] **Step 3: Wire into the client.** Choose the auth in one place, in `ServiceNowClient.__init__`. Update the class docstring.
 - [ ] **Step 4: Run tests, commit** `feat: authenticate REST calls with OAuth bearer tokens`
 
-### Task 5: Browser login and command behaviour
+### Task 5: Browser login and command behaviour (code done, tracer check pending)
 
 **Files:**
 * Modify: `snow_cli/oauth.py`, `snow_cli/client.py`, `snow_cli/commands.py`, `snow_cli/mcp_server.py`, `snow_cli/audit.py`
@@ -212,7 +212,7 @@ Committed as `ccc354c`. `AuthType`, `client_id`, `client_secret`, `token_cache_f
 
 **Interfaces:**
 * `oauth.authorization_url(config, state) -> str`
-* `oauth.wait_for_code(state, timeout=120) -> str`, running the local callback server
+* `oauth.CallbackServer(state, port)` with `wait_for_code(timeout) -> str`
 * `oauth.browser_login(config, store) -> None`
 * `ServiceNowClient.authenticate() -> None`
 

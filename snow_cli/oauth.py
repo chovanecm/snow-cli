@@ -1,6 +1,11 @@
 """OAuth authorization code grant: token requests and bearer auth for requests."""
+import hmac
+import http.server
+import secrets
 import time
-from typing import Callable
+import urllib.parse
+import webbrowser
+from typing import Callable, Optional
 
 import requests
 
@@ -8,8 +13,10 @@ from .config import Config
 from .timeouts import DEFAULT_TIMEOUT
 from .token_store import Tokens, TokenStore
 
-REDIRECT_URI = "http://localhost:8765/callback"
+REDIRECT_PORT = 8765
+REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
 EXPIRY_MARGIN_SECONDS = 60
+LOGIN_TIMEOUT_SECONDS = 180
 
 
 class OAuthError(RuntimeError):
@@ -22,6 +29,82 @@ class OAuthRejected(OAuthError):
 
 class OAuthLoginRequired(OAuthError):
     """No usable tokens remain, so the user has to sign in again."""
+
+
+def authorization_url(config: Config, state: str) -> str:
+    query = urllib.parse.urlencode({
+        "response_type": "code",
+        "client_id": config.client_id,
+        "redirect_uri": REDIRECT_URI,
+        "state": state,
+    })
+    return f"https://{config.instance}/oauth_auth.do?{query}"
+
+
+class _CallbackHandler(http.server.BaseHTTPRequestHandler):
+    timeout = 5  # a silent connection must not block the server
+
+    def do_GET(self):
+        url = urllib.parse.urlsplit(self.path)
+        if url.path != "/callback":
+            self._respond(404, "Not found.")
+            return
+        query = urllib.parse.parse_qs(url.query)
+        state = query.get("state", [""])[0].encode()
+        if not hmac.compare_digest(state, self.server.expected_state):
+            self._respond(400, "Sign-in could not be verified.")
+            return
+        self.server.callback = query
+        self._respond(200, "Sign-in finished. You can close this tab.")
+
+    def _respond(self, status: int, message: str):
+        # The body is always fixed text: query values must never be echoed.
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(f"{message}\n".encode())
+
+    def log_message(self, format, *args):
+        pass  # the default logs request lines, which contain the code
+
+
+class CallbackServer(http.server.HTTPServer):
+    """Receives the browser redirect on the loopback interface."""
+
+    def __init__(self, state: str, port: int):
+        self.expected_state = state.encode()
+        self.callback: Optional[dict] = None
+        try:
+            super().__init__(("127.0.0.1", port), _CallbackHandler)
+        except OSError as e:
+            raise OAuthError(f"Cannot receive the sign-in callback on port {port}: {e}") from e
+
+    def wait_for_code(self, timeout: float) -> str:
+        deadline = time.monotonic() + timeout
+        while self.callback is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise OAuthError("Timed out waiting for the browser sign-in.")
+            self.timeout = remaining
+            self.handle_request()
+        if "code" in self.callback:
+            return self.callback["code"][0]
+        reason = self.callback.get("error_description") or self.callback.get("error") or ["no code received"]
+        raise OAuthError(f"Sign-in failed: {reason[0]}")
+
+
+def browser_login(config: Config, store: TokenStore) -> None:
+    """Sign in through the browser and store the resulting tokens."""
+    state = secrets.token_urlsafe(32)
+    server = CallbackServer(state, REDIRECT_PORT)  # bind first, so a busy port fails early
+    try:
+        url = authorization_url(config, state)
+        print(f"Opening the browser to sign in. If it does not open, visit:\n{url}")
+        webbrowser.open(url)
+        code = server.wait_for_code(LOGIN_TIMEOUT_SECONDS)
+    finally:
+        server.server_close()
+    store.save(exchange_code(config, code))
 
 
 def exchange_code(config: Config, code: str, now: Callable[[], float] = time.time) -> Tokens:

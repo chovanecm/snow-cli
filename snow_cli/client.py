@@ -7,7 +7,7 @@ from typing import Optional
 import requests
 
 from .config import Config
-from .oauth import BearerAuth, OAuthTokenProvider
+from .oauth import BearerAuth, OAuthTokenProvider, browser_login
 from .timeouts import DEFAULT_TIMEOUT
 from .token_store import TokenStore
 
@@ -20,23 +20,28 @@ class ServiceNowClient:
     """Facade owning both HTTP transports (cookie-auth scraping + basic or bearer REST)."""
 
     def __init__(self, config: Config):
+        self._config = config
         self._base_url = f"https://{config.instance}"
         self._cookie_file = config.cookie_file
 
         self._rest = requests.Session()
+        self._token_store: Optional[TokenStore] = None
         if config.is_oauth:
-            store = TokenStore(config.instance, config.client_id, config.token_cache_file)
-            self._rest.auth = BearerAuth(OAuthTokenProvider(config, store))
+            self._token_store = TokenStore(config.instance, config.client_id, config.token_cache_file)
+            self._rest.auth = BearerAuth(OAuthTokenProvider(config, self._token_store))
         else:
             self._rest.auth = (config.user, config.password)
         self._rest.headers.update({"Accept": "application/json"})
 
         self._scraping: Optional[requests.Session] = None
-        self._supports_ui_session = not config.is_oauth
 
     @property
     def supports_ui_session(self) -> bool:
-        return self._supports_ui_session
+        return self._token_store is None
+
+    def authenticate(self) -> None:
+        """Sign in through the browser. OAuth instances only."""
+        browser_login(self._config, self._token_store)
 
     # ── REST transport ─────────────────────────────────────────────────────
 

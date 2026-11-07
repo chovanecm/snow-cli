@@ -157,6 +157,8 @@ def snow_login(instance: Optional[str] = None) -> str:
     audit_params = {"instance": instance or "(default)"}
     try:
         config = _load_config(instance, audit_params)
+        if config.is_oauth:
+            raise ValueError(f"{config.instance} uses OAuth. Run 'snow login' in a terminal to sign in.")
         exit_code, result = _run_with_capture(login, config)
         _log_command("snow_login", audit_params, exit_code, t0)
         return result

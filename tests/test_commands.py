@@ -44,9 +44,86 @@ sys.modules.setdefault("mcp.types", _mcp_types_module)
 from click.testing import CliRunner
 
 from snow_cli import cli as cli_module
-from snow_cli.commands import _parse_and_display_output, _parse_output_lines, _wrap_script_with_output_markers, run_script
-from snow_cli.config import Config
+from snow_cli.commands import (
+    _parse_and_display_output,
+    _parse_output_lines,
+    _wrap_script_with_output_markers,
+    count_records,
+    elevate,
+    login,
+    run_script,
+)
+from snow_cli.config import AuthType, Config
+from snow_cli.oauth import OAuthError
 from snow_cli.client import ScriptTokenError
+
+
+class OAuthCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.config = Config(
+            instance="dev.example.com",
+            auth_type=AuthType.OAUTH,
+            client_id="abc",
+            client_secret="s3cret",
+            token_cache_file=Path(self.tmp.name) / "oauth_token.json",
+            tmp_dir=Path(self.tmp.name),
+        )
+
+    def run_command(self, fn, *args, **kwargs):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = fn(*args, **kwargs)
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_login_signs_in_through_the_client(self):
+        with patch("snow_cli.commands.ServiceNowClient") as client_cls:
+            client = client_cls.return_value
+            client.supports_ui_session = False
+            code, stdout, _ = self.run_command(login, self.config)
+        self.assertEqual(code, 0)
+        self.assertIn("dev.example.com", stdout)
+        client.authenticate.assert_called_once_with()
+        client.scraping_post.assert_not_called()
+        client.get_login_token.assert_not_called()
+
+    def test_login_reports_oauth_failure(self):
+        with patch("snow_cli.commands.ServiceNowClient") as client_cls:
+            client_cls.return_value.supports_ui_session = False
+            client_cls.return_value.authenticate.side_effect = OAuthError("Timed out")
+            code, _, stderr = self.run_command(login, self.config)
+        self.assertEqual(code, 1)
+        self.assertIn("Timed out", stderr)
+
+    def test_session_commands_are_refused_without_http(self):
+        with patch("snow_cli.client.requests.Session") as session_cls:
+            for fn, kwargs in ((elevate, {}), (run_script, {"script_content": "gs.print(1);"})):
+                with self.subTest(command=fn.__name__):
+                    code, _, stderr = self.run_command(fn, self.config, **kwargs)
+                    self.assertEqual(code, 1)
+                    self.assertIn("UI session", stderr)
+        session_cls.return_value.get.assert_not_called()
+        session_cls.return_value.post.assert_not_called()
+
+    def test_run_script_fails_before_reading_the_script(self):
+        with patch("snow_cli.commands.sys.stdin") as stdin, \
+             patch("builtins.open") as open_file:
+            self.run_command(run_script, self.config)
+            self.run_command(run_script, self.config, script_file="script.js")
+        stdin.read.assert_not_called()
+        open_file.assert_not_called()
+
+    def test_auto_login_does_not_attempt_login(self):
+        with patch("snow_cli.commands.login") as login_mock:
+            code, _, _ = self.run_command(run_script, self.config, script_content="x", auto_login=True)
+        self.assertEqual(code, 1)
+        login_mock.assert_not_called()
+
+    def test_rest_command_without_sign_in_tells_the_user_to_log_in(self):
+        code, _, stderr = self.run_command(count_records, self.config, "incident")
+        self.assertEqual(code, 1)
+        self.assertIn("snow login", stderr)
 
 
 class CliConfigResolutionTests(unittest.TestCase):

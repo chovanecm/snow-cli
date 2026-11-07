@@ -1,9 +1,16 @@
+import contextlib
+import io
 import json
+import socket
 import sys
+import threading
 import types
 import unittest
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -21,10 +28,13 @@ from snow_cli.client import DEFAULT_TIMEOUT
 from snow_cli.config import AuthType, Config
 from snow_cli.oauth import (
     BearerAuth,
+    CallbackServer,
     OAuthError,
     OAuthLoginRequired,
     OAuthRejected,
     OAuthTokenProvider,
+    authorization_url,
+    browser_login,
     exchange_code,
     refresh_tokens,
 )
@@ -261,3 +271,160 @@ class BearerAuthTests(unittest.TestCase):
     def test_other_errors_are_not_retried(self):
         self.assertEqual(self.get([403]).status_code, 403)
         self.assertEqual(len(self.adapter.auth_headers), 1)
+
+
+class AuthorizationUrlTests(unittest.TestCase):
+    def test_contains_expected_parameters_and_no_secret(self):
+        url = urllib.parse.urlsplit(authorization_url(_config(), "st&te"))
+        self.assertEqual((url.scheme, url.netloc, url.path), ("https", "dev.example.com", "/oauth_auth.do"))
+        self.assertEqual(urllib.parse.parse_qs(url.query), {
+            "response_type": ["code"],
+            "client_id": ["abc"],
+            "redirect_uri": ["http://localhost:8765/callback"],
+            "state": ["st&te"],
+        })
+        self.assertNotIn(SECRET, url.query)
+
+
+class CallbackServerTests(unittest.TestCase):
+    STATE = "good-state"
+
+    def setUp(self):
+        self.server = CallbackServer(self.STATE, port=0)
+        self.addCleanup(self.server.server_close)
+        self.outcome = {}
+
+    def wait_in_background(self, timeout=5):
+        def run():
+            try:
+                self.outcome["code"] = self.server.wait_for_code(timeout)
+            except OAuthError as e:
+                self.outcome["error"] = e
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        self.addCleanup(thread.join)
+        return thread
+
+    def get(self, path):
+        url = f"http://127.0.0.1:{self.server.server_address[1]}{path}"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as response:
+                return response.getcode(), response.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
+    def query(self, **params):
+        return "/callback?" + urllib.parse.urlencode(params)
+
+    def test_binds_loopback_only(self):
+        self.assertEqual(self.server.server_address[0], "127.0.0.1")
+
+    def test_correct_callback_returns_the_code(self):
+        thread = self.wait_in_background()
+        status, _ = self.get(self.query(state=self.STATE, code="the-code"))
+        thread.join()
+        self.assertEqual(status, 200)
+        self.assertEqual(self.outcome["code"], "the-code")
+
+    def test_wrong_state_is_refused_and_waiting_continues(self):
+        thread = self.wait_in_background()
+        self.assertEqual(self.get(self.query(state="bad", code="evil"))[0], 400)
+        self.assertEqual(self.get(self.query(code="evil"))[0], 400)
+        self.assertEqual(self.get(self.query(state="bad", error="access_denied"))[0], 400)
+        self.get(self.query(state=self.STATE, code="the-code"))
+        thread.join()
+        self.assertEqual(self.outcome, {"code": "the-code"})
+
+    def test_other_paths_keep_waiting(self):
+        thread = self.wait_in_background()
+        self.assertEqual(self.get("/favicon.ico")[0], 404)
+        self.get(self.query(state=self.STATE, code="the-code"))
+        thread.join()
+        self.assertEqual(self.outcome, {"code": "the-code"})
+
+    def test_error_callback_raises_with_the_reason(self):
+        thread = self.wait_in_background()
+        self.get(self.query(state=self.STATE, error="access_denied", error_description="User said no"))
+        thread.join()
+        self.assertIn("User said no", str(self.outcome["error"]))
+
+    def test_callback_without_code_raises(self):
+        thread = self.wait_in_background()
+        self.get(self.query(state=self.STATE))
+        thread.join()
+        self.assertIsInstance(self.outcome["error"], OAuthError)
+
+    def test_response_does_not_echo_query_values(self):
+        thread = self.wait_in_background()
+        marker = "<script>marker</script>"
+        for params in (
+            {"state": marker, "code": marker},
+            {"state": self.STATE, "error": marker, "error_description": marker},
+        ):
+            self.assertNotIn("marker", self.get(self.query(**params))[1])
+        thread.join()
+
+    def test_code_is_not_logged(self):
+        thread = self.wait_in_background()
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.get(self.query(state=self.STATE, code="the-code"))
+            thread.join()
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_timeout_raises(self):
+        with self.assertRaisesRegex(OAuthError, "Timed out"):
+            self.server.wait_for_code(0.05)
+
+
+class BrowserLoginTests(unittest.TestCase):
+    def setUp(self):
+        for target, name in (("snow_cli.oauth.webbrowser.open", "open_browser"), ("snow_cli.oauth.exchange_code", "exchange")):
+            patcher = patch(target)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+        self.exchange.return_value = Tokens("a", "r", NOW)
+        self.store = FakeStore()
+
+    def login(self, port=0):
+        stdout = io.StringIO()
+        with patch("snow_cli.oauth.REDIRECT_PORT", port), contextlib.redirect_stdout(stdout):
+            browser_login(_config(), self.store)
+        return stdout.getvalue()
+
+    def test_stores_tokens_from_the_received_code(self):
+        calls = []
+        self.open_browser.side_effect = lambda url: calls.append("browser")
+        with patch.object(CallbackServer, "wait_for_code", side_effect=lambda timeout: calls.append("wait") or "code"):
+            output = self.login()
+        self.assertEqual(calls, ["browser", "wait"])
+        self.exchange.assert_called_once_with(ANY, "code")
+        self.assertEqual(self.store.saved, [Tokens("a", "r", NOW)])
+        url = self.open_browser.call_args[0][0]
+        self.assertIn(url, output)
+        self.assertNotIn(SECRET, output)
+
+    def test_states_differ_between_logins(self):
+        with patch.object(CallbackServer, "wait_for_code", return_value="code"):
+            self.login()
+            self.login()
+        first, second = (urllib.parse.parse_qs(urllib.parse.urlsplit(c[0][0]).query)["state"][0]
+                         for c in self.open_browser.call_args_list)
+        self.assertNotEqual(first, second)
+        self.assertGreaterEqual(len(first), 32)
+
+    def test_busy_port_fails_before_opening_the_browser(self):
+        with socket.socket() as blocker:
+            blocker.bind(("127.0.0.1", 0))
+            blocker.listen(1)
+            port = blocker.getsockname()[1]
+            with self.assertRaisesRegex(OAuthError, str(port)):
+                self.login(port=port)
+        self.open_browser.assert_not_called()
+
+    def test_failed_sign_in_stores_nothing(self):
+        with patch.object(CallbackServer, "wait_for_code", side_effect=OAuthError("Timed out")):
+            with self.assertRaises(OAuthError):
+                self.login()
+        self.assertEqual(self.store.saved, [])
