@@ -300,20 +300,20 @@ Tasks 3 and 6-8 do not depend on the result. Tasks 4 and 5 use the fixtures.
 - [ ] **Step 4: SKILL.md.** Note that OAuth instances need `snow login` in a terminal, and that `snow_login`, `snow_run_script` and `snow_elevate` are unavailable on them.
 - [ ] **Step 5: Commit** `docs: describe OAuth sign-in setup`
 
-### Task 9: End-to-end check
+### Task 9: End-to-end check (done)
 
 On a non-production instance, using read-only commands only. No script is run there:
 
-- [ ] `snow add <instance> --oauth`, then `snow login`
-- [ ] `snow r search sys_db_object -l 1`, `snow r count incident`, `snow table fields incident`
-- [ ] Change `expires_at` in stored tokens to the past, and confirm a refresh happens
-- [ ] Corrupt the access token, leaving `expires_at` alone, and confirm a REST command recovers via the 401 retry
-- [ ] Corrupt the refresh token too, and confirm the error says to run `snow login`
-- [ ] Set only `snow_client_id` and confirm a clear error
-- [ ] `snow run example.js` and `snow elevate` print the guard message
-- [ ] An MCP search works against the OAuth instance, and `snow_login` gives its error
-- [ ] `snow remove <instance>` clears the secret and tokens
-- [ ] An existing basic instance still works: `snow login`, `snow r search`
+- [x] `snow add <instance> --oauth`, then `snow login`
+- [x] `snow r search sys_db_object -l 1`, `snow r count incident`, `snow table fields incident`
+- [x] Change `expires_at` in stored tokens to the past, and confirm a refresh happens
+- [x] Corrupt the access token, leaving `expires_at` alone, and confirm a REST command recovers via the 401 retry
+- [x] Corrupt the refresh token too, and confirm the error says to run `snow login`
+- [x] Set only `snow_client_id` and confirm a clear error
+- [x] `snow run example.js` and `snow elevate` print the guard message
+- [x] An MCP search works against the OAuth instance, and `snow_login` gives its error
+- [x] `snow remove <instance>` clears the secret and tokens
+- [x] An existing basic instance still works: `snow login`, `snow r search`
 
 ## Spike Results
 
