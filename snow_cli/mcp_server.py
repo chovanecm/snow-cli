@@ -1,16 +1,19 @@
 """MCP server mode for ServiceNow CLI"""
 import io
+import os
 import time
 import contextlib
-from typing import Optional, List
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from .config import Config
-from .commands import login, elevate, run_script, search_records_json, table_fields_json, count_records_value, aggregate_records_json, _validate_output_file
+from .commands import login, elevate, run_script, search_records_json, table_fields_json, count_records_value, aggregate_records_json
+from .instance_repository import InstanceRepository
 from .instance_manager import list_instances
 from .audit import log_tool_call
+from .config import Config
 
 
 # -- Annotation presets -------------------------------------------------------
@@ -52,8 +55,58 @@ mcp = FastMCP(
 )
 
 
-def _run_with_capture(fn, *args, **kwargs) -> str:
-    """Run a command function and return captured stdout + stderr as a single string."""
+def _load_config(instance: Optional[str], audit_params: dict) -> Config:
+    """Resolve config for a tool call, refusing hosts the user has not configured.
+
+    Records the resolved host in audit_params, so the audit log names it even
+    when the caller omits the instance.
+
+    The instance value comes from the AI client, and load_config applies
+    snow_user and snow_pwd to any host, so it must not choose a new one.
+    """
+    repository = InstanceRepository()
+    if instance:
+        allowed = set(repository.list_all())
+        allowed.add(os.environ.get("snow_instance"))
+        if instance not in allowed:
+            raise ValueError(f"Instance {instance} is not configured. Run 'snow add {instance}' first.")
+    config = repository.load_config(instance=instance)
+    if config.instance:
+        audit_params["instance"] = config.instance
+    return config
+
+
+def _resolve_output_path(path: str) -> str:
+    """Return the absolute path for an output file, confined to the working directory.
+
+    MCP callers are not trusted with arbitrary writes. They can move the file
+    afterwards, so the tools report the absolute location in "saved_to".
+    """
+    candidate = Path(path)
+    if candidate.is_absolute():
+        raise ValueError(f"Absolute output paths are not allowed: {path}")
+    if ".." in candidate.parts:
+        raise ValueError(f"Path traversal is not allowed in output paths: {path}")
+    cwd = Path.cwd().resolve()
+    resolved = (cwd / candidate).resolve()
+    try:
+        resolved.relative_to(cwd)
+    except ValueError:
+        raise ValueError(f"Output path escapes the working directory: {path}")
+    return str(resolved)
+
+
+def _log_command(tool_name: str, audit_params: dict, exit_code: int, t0: float) -> None:
+    """Audit a command function's result. Commands report failure by exit code, not by raising."""
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    if exit_code == 0:
+        log_tool_call(tool_name, audit_params, "success", duration_ms=duration_ms)
+    else:
+        log_tool_call(tool_name, audit_params, "error", error=f"exit code {exit_code}", duration_ms=duration_ms)
+
+
+def _run_with_capture(fn, *args, **kwargs) -> Tuple[int, str]:
+    """Run a command function and return its exit code and captured stdout + stderr as one string."""
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
     with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
@@ -67,7 +120,7 @@ def _run_with_capture(fn, *args, **kwargs) -> str:
         parts.append(f"[stderr]\n{errors.rstrip()}")
     if not parts:
         parts.append("Done." if exit_code == 0 else f"Command failed (exit code {exit_code}).")
-    return "\n".join(parts)
+    return exit_code, "\n".join(parts)
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
@@ -82,13 +135,14 @@ def snow_run_script(script: str, instance: Optional[str] = None) -> str:
                   Omit to use the default configured instance.
     """
     t0 = time.monotonic()
+    audit_params = {"instance": instance or "(default)", "script_length": len(script)}
     try:
-        config = Config(instance=instance)
-        result = _run_with_capture(run_script, config, script_content=script)
-        log_tool_call("snow_run_script", {"instance": instance or "(default)", "script_length": len(script)}, "success", duration_ms=int((time.monotonic() - t0) * 1000))
+        config = _load_config(instance, audit_params)
+        exit_code, result = _run_with_capture(run_script, config, script_content=script)
+        _log_command("snow_run_script", audit_params, exit_code, t0)
         return result
     except Exception as e:
-        log_tool_call("snow_run_script", {"instance": instance or "(default)", "script_length": len(script)}, "error", error=str(e), duration_ms=int((time.monotonic() - t0) * 1000))
+        log_tool_call("snow_run_script", audit_params, "error", error=str(e), duration_ms=int((time.monotonic() - t0) * 1000))
         raise
 
 
@@ -100,13 +154,14 @@ def snow_login(instance: Optional[str] = None) -> str:
         instance: ServiceNow instance hostname. Omit to use the default instance.
     """
     t0 = time.monotonic()
+    audit_params = {"instance": instance or "(default)"}
     try:
-        config = Config(instance=instance)
-        result = _run_with_capture(login, config)
-        log_tool_call("snow_login", {"instance": instance or "(default)"}, "success", duration_ms=int((time.monotonic() - t0) * 1000))
+        config = _load_config(instance, audit_params)
+        exit_code, result = _run_with_capture(login, config)
+        _log_command("snow_login", audit_params, exit_code, t0)
         return result
     except Exception as e:
-        log_tool_call("snow_login", {"instance": instance or "(default)"}, "error", error=str(e), duration_ms=int((time.monotonic() - t0) * 1000))
+        log_tool_call("snow_login", audit_params, "error", error=str(e), duration_ms=int((time.monotonic() - t0) * 1000))
         raise
 
 
@@ -118,13 +173,14 @@ def snow_elevate(instance: Optional[str] = None) -> str:
         instance: ServiceNow instance hostname. Omit to use the default instance.
     """
     t0 = time.monotonic()
+    audit_params = {"instance": instance or "(default)"}
     try:
-        config = Config(instance=instance)
-        result = _run_with_capture(elevate, config)
-        log_tool_call("snow_elevate", {"instance": instance or "(default)"}, "success", duration_ms=int((time.monotonic() - t0) * 1000))
+        config = _load_config(instance, audit_params)
+        exit_code, result = _run_with_capture(elevate, config)
+        _log_command("snow_elevate", audit_params, exit_code, t0)
         return result
     except Exception as e:
-        log_tool_call("snow_elevate", {"instance": instance or "(default)"}, "error", error=str(e), duration_ms=int((time.monotonic() - t0) * 1000))
+        log_tool_call("snow_elevate", audit_params, "error", error=str(e), duration_ms=int((time.monotonic() - t0) * 1000))
         raise
 
 
@@ -132,8 +188,8 @@ def snow_elevate(instance: Optional[str] = None) -> str:
 def snow_list_instances() -> str:
     """List all configured ServiceNow instances."""
     t0 = time.monotonic()
-    result = _run_with_capture(list_instances)
-    log_tool_call("snow_list_instances", {}, "success", duration_ms=int((time.monotonic() - t0) * 1000))
+    exit_code, result = _run_with_capture(list_instances)
+    _log_command("snow_list_instances", {}, exit_code, t0)
     return result
 
 
@@ -167,20 +223,23 @@ def snow_record_search(
         limit: Maximum number of records to return. Set this to avoid large responses.
         display_values: One of values, display, both (default both).
         sys_id: Shortcut for fields=sys_id.
-        output_file: If set, save JSON results to this file path and return only
+        output_file: If set, save JSON results to this path and return only
                      {"saved_to": "...", "count": N, "fields": [...]} instead of all records.
+                     Must be relative and stay inside the server's working directory;
+                     "saved_to" is the absolute location.
         instance: ServiceNow instance hostname. Omit to use default instance.
     """
     import json as _json
     t0 = time.monotonic()
     audit_params = {"table": table, "query": query, "limit": limit, "instance": instance or "(default)"}
-    config = Config(instance=instance)
     effective_fields = "sys_id" if sys_id else fields
     warning_prefix = ""
     if table in _SENSITIVE_TABLES:
         warning_prefix = f"WARNING: Accessing sensitive table '{table}'. Handle data with care.\n"
 
     try:
+        safe_path = _resolve_output_path(output_file) if output_file else None
+        config = _load_config(instance, audit_params)
         records = search_records_json(
             config,
             table=table,
@@ -192,12 +251,11 @@ def snow_record_search(
             display_values=display_values,
         )
         if output_file:
-            safe_path = _validate_output_file(output_file)
             with open(safe_path, "w", encoding="utf-8") as fh:
                 fh.write(_json.dumps(records, ensure_ascii=False, indent=2))
             field_names = list(records[0].keys()) if records else []
             log_tool_call("snow_record_search", {**audit_params, "output_file": output_file, "record_count": len(records)}, "success", duration_ms=int((time.monotonic() - t0) * 1000))
-            return _json.dumps({"warning": warning_prefix.strip(), "saved_to": output_file, "count": len(records), "fields": field_names})
+            return _json.dumps({"warning": warning_prefix.strip(), "saved_to": safe_path, "count": len(records), "fields": field_names})
         log_tool_call("snow_record_search", {**audit_params, "record_count": len(records)}, "success", duration_ms=int((time.monotonic() - t0) * 1000))
         return warning_prefix + _json.dumps(records, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -223,24 +281,26 @@ def snow_table_fields(
         table: ServiceNow table name (e.g. incident, cmdb_ci, task).
         output_file: If set, save JSON results to this path and return only
                      {"saved_to": "...", "count": N} instead of all fields.
+                     Must be relative and stay inside the server's working directory;
+                     "saved_to" is the absolute location.
         instance: ServiceNow instance hostname. Omit to use default instance.
     """
     import json as _json
     t0 = time.monotonic()
     audit_params = {"table": table, "instance": instance or "(default)"}
-    config = Config(instance=instance)
     warning_prefix = ""
     if table in _SENSITIVE_TABLES:
         warning_prefix = f"WARNING: Accessing sensitive table '{table}'. Handle data with care.\n"
 
     try:
+        safe_path = _resolve_output_path(output_file) if output_file else None
+        config = _load_config(instance, audit_params)
         fields_data = table_fields_json(config, table)
         if output_file:
-            safe_path = _validate_output_file(output_file)
             with open(safe_path, "w", encoding="utf-8") as fh:
                 fh.write(_json.dumps(fields_data, ensure_ascii=False, indent=2))
             log_tool_call("snow_table_fields", {**audit_params, "output_file": output_file, "field_count": len(fields_data)}, "success", duration_ms=int((time.monotonic() - t0) * 1000))
-            return _json.dumps({"warning": warning_prefix.strip(), "saved_to": output_file, "count": len(fields_data)})
+            return _json.dumps({"warning": warning_prefix.strip(), "saved_to": safe_path, "count": len(fields_data)})
         log_tool_call("snow_table_fields", {**audit_params, "field_count": len(fields_data)}, "success", duration_ms=int((time.monotonic() - t0) * 1000))
         return warning_prefix + _json.dumps(fields_data, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -266,8 +326,8 @@ def snow_record_count(
     import json as _json
     t0 = time.monotonic()
     audit_params = {"table": table, "query": query, "instance": instance or "(default)"}
-    config = Config(instance=instance)
     try:
+        config = _load_config(instance, audit_params)
         count = count_records_value(config, table, query=query)
         log_tool_call("snow_record_count", {**audit_params, "count": count}, "success", duration_ms=int((time.monotonic() - t0) * 1000))
         return _json.dumps({"count": count})
@@ -307,13 +367,16 @@ def snow_record_aggregate(
         having: HAVING clause filter (e.g. COUNT>10).
         display_values: One of values, display, both (default both).
         output_file: If set, save JSON results to this file and return only metadata.
+                     Must be relative and stay inside the server's working directory;
+                     "saved_to" is the absolute location.
         instance: ServiceNow instance hostname. Omit to use default instance.
     """
     import json as _json
     t0 = time.monotonic()
     audit_params = {"table": table, "query": query, "group_by": group_by, "instance": instance or "(default)"}
-    config = Config(instance=instance)
     try:
+        safe_path = _resolve_output_path(output_file) if output_file else None
+        config = _load_config(instance, audit_params)
         records = aggregate_records_json(
             config,
             table=table,
@@ -328,11 +391,10 @@ def snow_record_aggregate(
             display_values=display_values,
         )
         if output_file:
-            safe_path = _validate_output_file(output_file)
             with open(safe_path, "w", encoding="utf-8") as fh:
                 fh.write(_json.dumps(records, ensure_ascii=False, indent=2))
             log_tool_call("snow_record_aggregate", {**audit_params, "output_file": output_file, "record_count": len(records)}, "success", duration_ms=int((time.monotonic() - t0) * 1000))
-            return _json.dumps({"saved_to": output_file, "count": len(records)})
+            return _json.dumps({"saved_to": safe_path, "count": len(records)})
         log_tool_call("snow_record_aggregate", {**audit_params, "record_count": len(records)}, "success", duration_ms=int((time.monotonic() - t0) * 1000))
         return _json.dumps(records, ensure_ascii=False, indent=2)
     except Exception as e:

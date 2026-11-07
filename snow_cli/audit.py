@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 
 
 # Fields whose values should never appear in the audit log
-_REDACTED_PARAMS = frozenset({"password", "pwd", "secret", "token"})
+_REDACTED_PARAMS = frozenset({"password", "pwd", "secret", "token", "client_secret", "access_token"})
 _REDACT_MARKER = "***REDACTED***"
 
 

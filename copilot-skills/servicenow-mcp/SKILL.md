@@ -35,7 +35,7 @@ Use this skill when the user asks to operate on ServiceNow via MCP tools.
   - `both` → nested `{"value": ..., "display_value": ...}` objects per field
   - `display` → human-readable labels only (good for presenting to user)
   - `values` → raw values only (good for data processing, export)
-- For large exports (> a few hundred records), pass `output_file` to save JSON to disk and receive only metadata back (`{"saved_to": "...", "count": N}`). This avoids filling the context window with data.
+- For large exports (> a few hundred records), pass `output_file` to save JSON to disk and receive only metadata back (`{"saved_to": "...", "count": N}`). This avoids filling the context window with data. `output_file` must be a relative path inside the server's working directory. `saved_to` is the absolute location; move the file from there if it belongs elsewhere.
 - For tables with many fields (e.g. incident has 288), pass `output_file` to `snow_table_fields` and receive only metadata back.
 - For script execution, keep scripts focused and return readable output.
 - If a call fails, surface stderr and suggest the next corrective action.
@@ -63,7 +63,7 @@ To reverse engineer ServiceNow functionality, please refer to the `servicenow-re
 - "What fields does the incident table have? Show me reference fields."
 - "How many open incidents are there?"
 - "Search incident with query active=true, return number and state, limit 20."
-- "Export all open incidents to /tmp/open_incidents.json (use output_file)."
+- "Export all open incidents to open_incidents.json (use output_file)."
 - "Save the full schema of cmdb_ci to /tmp/cmdb_ci_schema.json."
 - "Run this background script on the default instance: gs.print('hello');"
 - "Reverse engineer the 'cbc' functionality — study sys_metadata, download relevant scripts, write a tutorial."
