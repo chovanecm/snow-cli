@@ -15,6 +15,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from .config import Config
 from .client import ScriptTokenError, ServiceNowClient
+from .timeouts import SCRIPT_TIMEOUT
 
 
 DISPLAY_VALUE_MAP = {
@@ -44,12 +45,25 @@ class OutputFormat(str, Enum):
         return [f for f in cls if f not in {cls.XML, cls.EXCEL}]
 
 
+def _ensure_ui_session(client: ServiceNowClient) -> None:
+    if not client.supports_ui_session:
+        raise ValueError(
+            "Background scripts and elevation need a UI session, which OAuth sign-in does not create. "
+            "Configure this instance with a username and password to use this command."
+        )
+
+
 def login(config: Config) -> int:
     """Login to ServiceNow instance"""
     try:
         config.ensure_credentials_set()
 
         client = ServiceNowClient(config)
+        if not client.supports_ui_session:
+            client.authenticate()
+            print(f"Successfully signed in to {config.instance}")
+            return 0
+
         login_token = client.get_login_token()
 
         response = client.scraping_post(
@@ -87,6 +101,7 @@ def elevate(config: Config) -> int:
         config.ensure_instance_set()
 
         client = ServiceNowClient(config)
+        _ensure_ui_session(client)
         token = client.get_elevate_token()
 
         response = client.scraping_post(
@@ -126,6 +141,9 @@ def run_script(
     try:
         config.ensure_instance_set()
 
+        client = ServiceNowClient(config)
+        _ensure_ui_session(client)
+
         if script_content is None:
             if script_file and script_file != "-":
                 with open(script_file, "r") as f:
@@ -133,7 +151,6 @@ def run_script(
             else:
                 script_content = sys.stdin.read()
 
-        client = ServiceNowClient(config)
         try:
             return _run_script_once(client, config, script_content)
         except ScriptTokenError as exc:
@@ -184,6 +201,7 @@ def _run_script_once(client: ServiceNowClient, config: Config, script_content: s
             "quota_managed_transaction": "on",
             "script": wrapped_script,
         },
+        timeout=SCRIPT_TIMEOUT,
     )
 
     if response.status_code != 200:

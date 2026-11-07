@@ -149,6 +149,18 @@ Session cookies are stored separately in:
 
 These are NOT sensitive like passwords (they expire), but still have file permissions 600.
 
+## OAuth Credentials
+
+For instances added with `snow add --oauth`:
+
+- **Client secret:** stored in the system keyring as service `snow-cli:{instance}`, account `oauth:{client_id}`. If the keyring is unavailable, it goes to `config.json` with a warning.
+- **Tokens:** stored in the system keyring as account `oauth-token:{client_id}`. If the keyring is unavailable, they go to `~/.snow-run/tmp/{instance}/oauth_token.json` with permissions 600 and a warning.
+- **Refresh tokens are long-lived credentials.** Treat a fallback token file like a password. Unlike session cookies, it stays useful long after the access token expires.
+- **Sign-in callback:** `snow login` listens on `127.0.0.1:8765` only, until the browser returns or 180 seconds pass. The `state` value must match, so a stray request cannot complete the sign-in.
+- **Token requests never follow redirects,** so the client secret cannot reach a redirect target.
+
+`snow remove`, and switching an instance's auth type or client, delete the secret and tokens.
+
 ## MCP Server Security
 
 When running as an MCP server (`snow mcp`), the tool is controlled by an AI assistant rather than a human typing commands directly. This introduces additional risks because the AI could be manipulated (prompt injection) or simply make poor decisions.

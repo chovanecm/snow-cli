@@ -38,7 +38,7 @@ sys.modules.setdefault("mcp.types", types.SimpleNamespace(ToolAnnotations=Mock))
 
 import snow_cli.mcp_server as mcp_server
 from snow_cli.audit import _redact
-from snow_cli.config import Config
+from snow_cli.config import AuthType, Config
 
 INSTANCE = "dev.example.com"
 
@@ -169,11 +169,28 @@ class ConfigFailureAuditTests(McpToolTestCase):
                 self.assert_error_audited(tool_name)
 
 
+class OAuthLoginTests(McpToolTestCase):
+    def test_snow_login_on_oauth_instance_never_runs_login(self):
+        self.repository.load_config.return_value = Config(instance=INSTANCE, auth_type=AuthType.OAUTH)
+        command = Mock(return_value=0)
+        with patch.object(mcp_server, "login", command):
+            with self.assertRaisesRegex(ValueError, "snow login"):
+                mcp_server.snow_login()
+        command.assert_not_called()
+        self.assertEqual(self.log_tool_call.call_args[0][2], "error")
+
+
 class AuditRedactionTests(unittest.TestCase):
     def test_oauth_values_are_redacted(self):
-        redacted = _redact({"client_secret": "s3cret", "access_token": "t0ken", "client_id": "abc"})
+        redacted = _redact({
+            "client_secret": "s3cret",
+            "access_token": "t0ken",
+            "refresh_token": "r3fresh",
+            "client_id": "abc",
+        })
         self.assertNotIn("s3cret", redacted.values())
         self.assertNotIn("t0ken", redacted.values())
+        self.assertNotIn("r3fresh", redacted.values())
         self.assertEqual(redacted["client_id"], "abc")
 
 

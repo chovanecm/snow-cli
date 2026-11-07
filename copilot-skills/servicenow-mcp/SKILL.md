@@ -24,6 +24,8 @@ Use this skill when the user asks to operate on ServiceNow via MCP tools.
 5. Query records with `snow_record_search` when table data is needed.
 6. Execute JavaScript with `snow_run_script` for operations that cannot be done via Table API.
 
+OAuth instances differ: `snow_login`, `snow_elevate` and `snow_run_script` are unavailable on them. If a tool reports that sign-in is needed, ask the user to run `snow login` in a terminal.
+
 ## Tool usage guidance
 
 - Prefer specifying `instance` explicitly when multiple instances exist.

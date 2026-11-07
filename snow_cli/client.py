@@ -7,6 +7,9 @@ from typing import Optional
 import requests
 
 from .config import Config
+from .oauth import BearerAuth, OAuthTokenProvider, browser_login
+from .timeouts import DEFAULT_TIMEOUT
+from .token_store import TokenStore
 
 
 class ScriptTokenError(ValueError):
@@ -14,33 +17,54 @@ class ScriptTokenError(ValueError):
 
 
 class ServiceNowClient:
-    """Facade owning both HTTP transports (cookie-auth scraping + basic-auth REST)."""
+    """Facade owning both HTTP transports (cookie-auth scraping + basic or bearer REST)."""
 
     def __init__(self, config: Config):
+        self._config = config
         self._base_url = f"https://{config.instance}"
         self._cookie_file = config.cookie_file
 
         self._rest = requests.Session()
-        self._rest.auth = (config.user, config.password)
+        self._token_store: Optional[TokenStore] = None
+        if config.is_oauth:
+            self._token_store = TokenStore(config.instance, config.client_id, config.token_cache_file)
+            self._rest.auth = BearerAuth(OAuthTokenProvider(config, self._token_store))
+        else:
+            self._rest.auth = (config.user, config.password)
         self._rest.headers.update({"Accept": "application/json"})
 
         self._scraping: Optional[requests.Session] = None
+
+    @property
+    def supports_ui_session(self) -> bool:
+        return self._token_store is None
+
+    def authenticate(self) -> None:
+        """Sign in through the browser. OAuth instances only."""
+        browser_login(self._config, self._token_store)
 
     # ── REST transport ─────────────────────────────────────────────────────
 
     def rest_get(self, path: str, params=None, extra_headers=None) -> requests.Response:
         headers = dict(extra_headers) if extra_headers else {}
-        return self._rest.get(f"{self._base_url}{path}", params=params, headers=headers)
+        return self._rest.get(
+            f"{self._base_url}{path}",
+            params=params,
+            headers=headers,
+            timeout=DEFAULT_TIMEOUT,
+        )
 
     # ── Scraping transport ─────────────────────────────────────────────────
 
     def scraping_get(self, path: str, **kwargs) -> requests.Response:
+        kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
         session = self._get_scraping_session()
         response = session.get(f"{self._base_url}{path}", **kwargs)
         self._save_cookies()
         return response
 
     def scraping_post(self, path: str, **kwargs) -> requests.Response:
+        kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
         session = self._get_scraping_session()
         response = session.post(f"{self._base_url}{path}", **kwargs)
         self._save_cookies()
