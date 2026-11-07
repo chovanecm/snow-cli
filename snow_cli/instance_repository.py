@@ -7,6 +7,8 @@ from typing import Dict, Optional
 
 import keyring
 
+from .token_store import TokenStore
+
 
 class InstanceRepository:
     """Owns all file-system and keyring I/O for instance storage."""
@@ -33,6 +35,7 @@ class InstanceRepository:
         data = self._load_json()
         if "instances" not in data:
             data["instances"] = {}
+        self._delete_stored_secret(instance, data["instances"].get(instance))
         keyring_success = self._set_password_in_keyring(instance, user, password)
         data["instances"][instance] = {"user": user, "keyring": keyring_success}  # full replacement clears stale "password" key
         if not keyring_success:
@@ -42,13 +45,26 @@ class InstanceRepository:
         self._save_json(data)
         return keyring_success
 
+    def save_oauth(self, instance: str, client_id: str, client_secret: str, set_default: bool = False) -> bool:
+        """Persist OAuth client credentials. Returns True if the secret was stored in keyring."""
+        data = self._load_json()
+        if "instances" not in data:
+            data["instances"] = {}
+        self._delete_stored_secret(instance, data["instances"].get(instance))
+        keyring_success = self._set_password_in_keyring(instance, self._secret_account(client_id), client_secret)
+        data["instances"][instance] = {"auth": "oauth", "client_id": client_id, "keyring": keyring_success}
+        if not keyring_success:
+            data["instances"][instance]["client_secret"] = client_secret
+        if set_default or "default_instance" not in data:
+            data["default_instance"] = instance
+        self._save_json(data)
+        return keyring_success
+
     def remove(self, instance: str):
         data = self._load_json()
         if instance not in data.get("instances", {}):
             return
-        user = data["instances"][instance].get("user")
-        if user:
-            self._delete_password_from_keyring(instance, user)
+        self._delete_stored_secret(instance, data["instances"][instance])
         del data["instances"][instance]
         if data.get("default_instance") == instance:
             remaining = list(data["instances"])
@@ -95,6 +111,15 @@ class InstanceRepository:
                 instance = data.get("default_instance")
             if instance and "instances" in data:
                 inst_cfg = data["instances"].get(instance, {})
+                if inst_cfg.get("auth") == "oauth" and not (user and password):
+                    client_id = inst_cfg.get("client_id")
+                    return Config(
+                        auth_type=AuthType.OAUTH,
+                        client_id=client_id,
+                        client_secret=self._get_password_from_keyring(instance, self._secret_account(client_id))
+                        or inst_cfg.get("client_secret"),
+                        **self._paths_for(instance),
+                    )
                 if not user:
                     user = inst_cfg.get("user")
                 if not password:
@@ -136,6 +161,21 @@ class InstanceRepository:
             f.write(json.dumps(data, indent=2))
 
     # ---------- keyring ----------
+
+    @staticmethod
+    def _secret_account(client_id: str) -> str:
+        return f"oauth:{client_id}"
+
+    def _delete_stored_secret(self, instance: str, entry: Optional[dict]):
+        """Remove the keyring secret and any tokens belonging to an instance entry."""
+        if not entry:
+            return
+        if entry.get("auth") == "oauth":
+            client_id = entry.get("client_id")
+            self._delete_password_from_keyring(instance, self._secret_account(client_id))
+            TokenStore(instance, client_id, self.token_cache_file_for(instance)).clear()
+        elif entry.get("user"):
+            self._delete_password_from_keyring(instance, entry["user"])
 
     def _get_password_from_keyring(self, instance: str, user: str) -> Optional[str]:
         if not user:

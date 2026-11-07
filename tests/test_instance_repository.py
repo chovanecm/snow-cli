@@ -19,6 +19,7 @@ sys.modules.setdefault("keyring", keyring_stub)
 
 from snow_cli.config import AuthType
 from snow_cli.instance_repository import InstanceRepository
+from snow_cli.token_store import Tokens, TokenStore
 
 
 class LoadJsonTests(unittest.TestCase):
@@ -301,3 +302,109 @@ class OAuthEnvResolutionTests(unittest.TestCase):
                 self.assertEqual(config.token_cache_file, tmp_dir / "oauth_token.json")
                 self.assertEqual(config.cookie_file, self.repo.cookie_file_for(self.INSTANCE))
                 self.assertEqual(config.tmp_dir, tmp_dir)
+
+
+class DictKeyring:
+    def __init__(self):
+        self.values = {}
+
+    def get_password(self, service, account):
+        return self.values.get((service, account))
+
+    def set_password(self, service, account, value):
+        self.values[(service, account)] = value
+
+    def delete_password(self, service, account):
+        del self.values[(service, account)]
+
+
+class StoredOAuthTests(unittest.TestCase):
+    INSTANCE = "dev.service-now.com"
+    SECRET_KEY = ("snow-cli:dev.service-now.com", "oauth:abc")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = InstanceRepository(snow_dir=Path(tmp.name) / ".snow-run")
+        self.keyring = DictKeyring()
+        for target in ("snow_cli.instance_repository.keyring", "snow_cli.token_store.keyring"):
+            patcher = patch(target, self.keyring)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        env_patcher = patch.dict(os.environ, {}, clear=True)
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+
+    def store_tokens(self, client_id="abc"):
+        store = TokenStore(self.INSTANCE, client_id, self.repo.token_cache_file_for(self.INSTANCE))
+        store.save(Tokens("access", "refresh", 1000.0))
+        return store
+
+    def test_save_oauth_keeps_the_secret_out_of_json(self):
+        self.assertTrue(self.repo.save_oauth(self.INSTANCE, "abc", "s3cret"))
+        self.assertEqual(self.keyring.values[self.SECRET_KEY], "s3cret")
+        self.assertNotIn("s3cret", self.repo.config_file.read_text())
+        self.assertEqual(
+            self.repo.list_all()[self.INSTANCE],
+            {"auth": "oauth", "client_id": "abc", "keyring": True},
+        )
+
+    def test_keyring_failure_stores_the_secret_in_json(self):
+        with patch.object(self.keyring, "set_password", side_effect=RuntimeError("no keyring")):
+            self.assertFalse(self.repo.save_oauth(self.INSTANCE, "abc", "s3cret"))
+        self.assertEqual(self.repo.list_all()[self.INSTANCE]["client_secret"], "s3cret")
+        self.assertEqual(self.repo.load_config().client_secret, "s3cret")
+
+    def test_first_instance_becomes_default(self):
+        self.repo.save_oauth(self.INSTANCE, "abc", "s3cret")
+        self.assertEqual(self.repo.get_default(), self.INSTANCE)
+
+    def test_load_config_returns_stored_oauth(self):
+        self.repo.save_oauth(self.INSTANCE, "abc", "s3cret")
+        config = self.repo.load_config()
+        self.assertIs(config.auth_type, AuthType.OAUTH)
+        self.assertEqual(config.instance, self.INSTANCE)
+        self.assertEqual(config.client_id, "abc")
+        self.assertEqual(config.client_secret, "s3cret")
+        self.assertEqual(config.token_cache_file, self.repo.token_cache_file_for(self.INSTANCE))
+        config.ensure_credentials_set()
+
+    def test_env_user_and_password_override_stored_oauth(self):
+        self.repo.save_oauth(self.INSTANCE, "abc", "s3cret")
+        with patch.dict(os.environ, {"snow_user": "env_user", "snow_pwd": "env_pass"}):
+            config = self.repo.load_config(instance=self.INSTANCE)
+        self.assertIs(config.auth_type, AuthType.BASIC)
+        self.assertEqual(config.user, "env_user")
+
+    def test_only_one_of_env_user_and_password_leaves_stored_oauth(self):
+        self.repo.save_oauth(self.INSTANCE, "abc", "s3cret")
+        with patch.dict(os.environ, {"snow_user": "env_user"}):
+            self.assertTrue(self.repo.load_config().is_oauth)
+
+    def test_switching_to_basic_removes_secret_and_tokens(self):
+        self.repo.save_oauth(self.INSTANCE, "abc", "s3cret")
+        store = self.store_tokens()
+        self.repo.save(self.INSTANCE, "admin", "pass")
+        self.assertNotIn(self.SECRET_KEY, self.keyring.values)
+        self.assertIsNone(store.load())
+        self.assertFalse(self.repo.load_config().is_oauth)
+
+    def test_switching_to_oauth_removes_the_password(self):
+        self.repo.save(self.INSTANCE, "admin", "pass")
+        self.repo.save_oauth(self.INSTANCE, "abc", "s3cret")
+        self.assertNotIn(("snow-cli:dev.service-now.com", "admin"), self.keyring.values)
+
+    def test_switching_client_removes_the_old_secret_and_tokens(self):
+        self.repo.save_oauth(self.INSTANCE, "abc", "s3cret")
+        store = self.store_tokens()
+        self.repo.save_oauth(self.INSTANCE, "xyz", "other")
+        self.assertNotIn(self.SECRET_KEY, self.keyring.values)
+        self.assertIsNone(store.load())
+
+    def test_remove_deletes_secret_and_tokens(self):
+        self.repo.save_oauth(self.INSTANCE, "abc", "s3cret")
+        store = self.store_tokens()
+        self.repo.remove(self.INSTANCE)
+        self.assertEqual(self.keyring.values, {})
+        self.assertIsNone(store.load())
+        self.assertEqual(self.repo.list_all(), {})
