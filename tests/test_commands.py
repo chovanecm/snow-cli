@@ -689,7 +689,7 @@ class RunWithCaptureTests(unittest.TestCase):
         def fn_with_config(config):
             print(f"instance={config}")
             return 0
-        result = _run_with_capture(fn_with_config, "my-instance")
+        _, result = _run_with_capture(fn_with_config, "my-instance")
         self.assertIn("instance=my-instance", result)
 
     def test_captures_stdout_when_fn_takes_no_args(self):
@@ -697,7 +697,7 @@ class RunWithCaptureTests(unittest.TestCase):
         def fn_no_config():
             print("no config needed")
             return 0
-        result = _run_with_capture(fn_no_config)
+        _, result = _run_with_capture(fn_no_config)
         self.assertIn("no config needed", result)
 
     def test_stderr_output_is_prefixed(self):
@@ -705,9 +705,13 @@ class RunWithCaptureTests(unittest.TestCase):
         def fn():
             print("err line", file=sys.stderr)
             return 0
-        result = _run_with_capture(fn)
+        _, result = _run_with_capture(fn)
         self.assertIn("[stderr]", result)
         self.assertIn("err line", result)
+
+    def test_returns_the_exit_code(self):
+        from snow_cli.mcp_server import _run_with_capture
+        self.assertEqual(_run_with_capture(lambda: 3)[0], 3)
 
     def test_run_without_config_capture_no_longer_exists(self):
         import snow_cli.mcp_server as mcp

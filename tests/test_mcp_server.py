@@ -223,3 +223,69 @@ class OutputFileSandboxTests(McpToolTestCase):
                     self.assertIn("error", json.loads(call_tool(path)))
                     self.commands[command_name].assert_not_called()
         self.assertFalse(outside.exists())
+
+
+class AuditOutcomeTests(McpToolTestCase):
+    def tools(self):
+        return [
+            ("snow_run_script", "run_script", lambda: mcp_server.snow_run_script("gs.print(1);")),
+            ("snow_login", "login", lambda: mcp_server.snow_login()),
+            ("snow_elevate", "elevate", lambda: mcp_server.snow_elevate()),
+            ("snow_list_instances", "list_instances", lambda: mcp_server.snow_list_instances()),
+        ]
+
+    def run_tool(self, command_name, exit_code, call_tool, output="done"):
+        def command(*args, **kwargs):
+            print(output)
+            return exit_code
+
+        self.log_tool_call.reset_mock()
+        with patch.object(mcp_server, command_name, command):
+            return call_tool()
+
+    def test_failed_command_is_audited_as_error_and_still_returns_output(self):
+        for tool_name, command_name, call_tool in self.tools():
+            with self.subTest(tool=tool_name):
+                result = self.run_tool(command_name, 1, call_tool, output="it failed")
+                self.assertEqual(result, "it failed")
+                args, kwargs = self.log_tool_call.call_args
+                self.assertEqual(args[0], tool_name)
+                self.assertEqual(args[2], "error")
+                self.assertEqual(kwargs["error"], "exit code 1")
+
+    def test_successful_command_is_audited_as_success(self):
+        for tool_name, command_name, call_tool in self.tools():
+            with self.subTest(tool=tool_name):
+                self.run_tool(command_name, 0, call_tool)
+                args, kwargs = self.log_tool_call.call_args
+                self.assertEqual(args[2], "success")
+                self.assertNotIn("error", kwargs)
+
+
+class AuditInstanceTests(McpToolTestCase):
+    def test_resolved_host_is_audited_when_instance_is_omitted(self):
+        cases = [
+            ("run_script", 0, lambda: mcp_server.snow_run_script("gs.print(1);")),
+            ("login", 0, lambda: mcp_server.snow_login()),
+            ("elevate", 0, lambda: mcp_server.snow_elevate()),
+            ("search_records_json", [], lambda: mcp_server.snow_record_search("incident")),
+            ("table_fields_json", [], lambda: mcp_server.snow_table_fields("incident")),
+            ("count_records_value", 1, lambda: mcp_server.snow_record_count("incident")),
+            ("aggregate_records_json", [], lambda: mcp_server.snow_record_aggregate("incident", count=True)),
+        ]
+        for command_name, return_value, call_tool in cases:
+            with self.subTest(command=command_name):
+                self.log_tool_call.reset_mock()
+                with patch.object(mcp_server, command_name, Mock(return_value=return_value)):
+                    call_tool()
+                self.assertEqual(self.log_tool_call.call_args[0][1]["instance"], INSTANCE)
+
+    def test_failure_after_config_load_audits_the_resolved_host(self):
+        with patch.object(mcp_server, "count_records_value", Mock(side_effect=RuntimeError("boom"))):
+            mcp_server.snow_record_count("incident")
+        self.assertEqual(self.log_tool_call.call_args[0][1]["instance"], INSTANCE)
+
+    def test_config_failure_audits_the_requested_value(self):
+        self.repository.load_config.side_effect = ValueError("bad")
+        mcp_server.snow_record_count("incident")
+        self.assertEqual(self.log_tool_call.call_args[0][1]["instance"], "(default)")
